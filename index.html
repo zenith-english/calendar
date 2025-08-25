@@ -1721,6 +1721,549 @@
             
             console.log(`=== displayEvents 완료: ${dateKey} ===`);
         }
-    </script>
+        / 특정 날짜에 로컬 변경사항이 있는지 확인 ✅
+       function hasLocalChangesForDate(dateKey) {
+           const original = events[dateKey] || [];
+           const local = localEvents[dateKey] || [];
+           
+           if (original.length !== local.length) {
+               return true;
+           }
+           
+           for (let i = 0; i < original.length; i++) {
+               if (original[i] !== local[i]) {
+                   return true;
+               }
+           }
+           
+           return false;
+       }
+       
+       // 모든 변경사항을 Google Sheets에 저장 - 단순화된 버전 ✅
+       async function saveAllChanges() {
+           if (!hasChanges || isSyncing || !isOnline) {
+               if (!hasChanges) {
+                   alert('No changes to save!');
+               }
+               return;
+           }
+           
+           isSyncing = true;
+           showStatus('Saving all changes...', 'syncing');
+           
+           try {
+               await saveChangesSimplified();
+           } catch (error) {
+               console.error('Error saving all changes:', error);
+               showStatus('Save failed: ' + error.message, 'error');
+           } finally {
+               isSyncing = false;
+           }
+       }
+       
+       // 개별 날짜 저장 함수 ✅
+       async function saveEventsForDate(dateKey, year, month) {
+           console.log(`=== 개별 저장 시작: ${dateKey} ===`);
+           
+           const localEventsForDate = localEvents[dateKey] || [];
+           const originalEventsForDate = events[dateKey] || [];
+           const originalKey = originalDateKeys[dateKey] || dateKey;
+           
+           console.log(`- 원본 (${originalEventsForDate.length}개):`, originalEventsForDate);
+           console.log(`- 로컬 (${localEventsForDate.length}개):`, localEventsForDate);
+           console.log(`- 원본 키: ${originalKey}`);
+           
+           try {
+               // 1단계: 기존 이벤트들 모두 삭제 (항상 인덱스 0 삭제)
+               if (originalEventsForDate.length > 0) {
+                   console.log(`${dateKey}: 기존 ${originalEventsForDate.length}개 이벤트 삭제 시작`);
+                   
+                   for (let i = 0; i < originalEventsForDate.length; i++) {
+                       console.log(`  삭제 중: [0] "${originalEventsForDate[i]}" (원래 ${i}번째)`);
+                       
+                       const deleteUrl = `${SCRIPT_URL}?action=deleteEvent&year=${year}&month=${month}&date=${encodeURIComponent(originalKey)}&index=0`;
+                       
+                       try {
+                           const deleteResponse = await fetch(deleteUrl);
+                           const deleteResult = await deleteResponse.json();
+                           
+                           if (deleteResult.status !== 'success') {
+                               console.log(`  ⌀ 삭제 실패: [0] (원래 ${i}번째) - ${deleteResult.message}`);
+                           }
+                           
+                           await new Promise(resolve => setTimeout(resolve, 200));
+                           
+                       } catch (error) {
+                           console.error(`  ⌀ 삭제 오류: [0] (원래 ${i}번째) -`, error);
+                       }
+                   }
+               }
+               
+               // 2단계: 새로운 이벤트들 추가
+               if (localEventsForDate.length > 0) {
+                   console.log(`${dateKey}: 새로운 ${localEventsForDate.length}개 이벤트 추가 시작`);
+                   
+                   for (let i = 0; i < localEventsForDate.length; i++) {
+                       const eventText = localEventsForDate[i];
+                       console.log(`  추가 중: [${i}] "${eventText}"`);
+                       
+                       const addUrl = `${SCRIPT_URL}?action=addEvent&year=${year}&month=${month}&date=${encodeURIComponent(dateKey)}&event=${encodeURIComponent(eventText)}`;
+                       
+                       try {
+                           const addResponse = await fetch(addUrl);
+                           const addResult = await addResponse.json();
+                           
+                           if (addResult.status !== 'success') {
+                               console.log(`  ⌀ 추가 실패: [${i}] "${eventText}" - ${addResult.message}`);
+                               return false;
+                           }
+                           
+                           await new Promise(resolve => setTimeout(resolve, 200));
+                           
+                       } catch (error) {
+                           console.error(`  ⌀ 추가 오류: [${i}] "${eventText}" -`, error);
+                           return false;
+                       }
+                   }
+               }
+               
+               console.log(`✅ ${dateKey} 처리 완료`);
+               return true;
+               
+           } catch (error) {
+               console.error(`⌀ ${dateKey} 처리 중 오류:`, error);
+               return false;
+           }
+       }
+       
+       // 단순화된 저장 로직 ✅
+       async function saveChangesSimplified() {
+           console.log('=== 단순화된 저장 시작 ===');
+           
+           const year = document.getElementById('year-select').value;
+           const month = document.getElementById('month-select').value;
+           let successCount = 0;
+           let totalDates = 0;
+           
+           // 처리할 날짜들 수집 (변경된 날짜만)
+           const changedDates = [];
+           
+           // 로컬에서 변경된 날짜들
+           Object.keys(localEvents).forEach(dateKey => {
+               if (hasLocalChangesForDate(dateKey)) {
+                   changedDates.push(dateKey);
+               }
+           });
+           
+           // 완전히 삭제된 날짜들 (원본에는 있지만 로컬에 없거나 빈 배열)
+           Object.keys(events).forEach(dateKey => {
+               if (!localEvents[dateKey] || localEvents[dateKey].length === 0) {
+                   if (!changedDates.includes(dateKey)) {
+                       changedDates.push(dateKey);
+                   }
+               }
+           });
+           
+           totalDates = changedDates.length;
+           console.log(`처리할 날짜 수: ${totalDates}`, changedDates);
+           
+           if (totalDates === 0) {
+               showStatus('No changes to save', 'saved');
+               markAsSaved();
+               return;
+           }
+           
+           // 각 날짜별로 처리
+           for (let i = 0; i < changedDates.length; i++) {
+               const dateKey = changedDates[i];
+               const progress = i + 1;
+               
+               showStatus(`Saving ${progress}/${totalDates}: ${dateKey}`, 'syncing');
+               
+               try {
+                   const success = await saveEventsForDate(dateKey, year, month);
+                   if (success) {
+                       successCount++;
+                       console.log(`✅ ${dateKey} 저장 성공`);
+                   } else {
+                       console.log(`⌀ ${dateKey} 저장 실패`);
+                   }
+               } catch (error) {
+                   console.error(`⌀ ${dateKey} 저장 오류:`, error);
+               }
+               
+               // 진행률 표시를 위한 잠시 대기
+               await new Promise(resolve => setTimeout(resolve, 100));
+           }
+           
+           console.log(`=== 저장 완료: ${successCount}/${totalDates} ===`);
+           
+           if (successCount > 0) {
+               // 성공 시 원본 데이터 업데이트
+               events = JSON.parse(JSON.stringify(localEvents));
+               
+               // 빈 배열 정리
+               Object.keys(events).forEach(key => {
+                   if (events[key].length === 0) {
+                       delete events[key];
+                       delete originalDateKeys[key];
+                   }
+               });
+               
+               markAsSaved();
+               showStatus(`All changes saved! (${successCount}/${totalDates} dates)`, 'saved');
+               
+               // UI 새로고침
+               setTimeout(() => {
+                   console.log('서버 동기화 확인을 위한 새로고침');
+                   generateCalendar();
+               }, 1000);
+               
+           } else {
+               showStatus('Save failed - no changes were saved', 'error');
+           }
+       }
+       
+       // 모달 열기
+       function openModal(dateKey) {
+           currentDate = dateKey;
+           editingEventIndex = null;
+           document.getElementById('modal-title').textContent = 'Add Event';
+           document.getElementById('event-input').value = '';
+           document.getElementById('delete-btn').style.display = 'none';
+           document.getElementById('event-modal').style.display = 'block';
+           document.getElementById('event-input').focus();
+       }
+       
+       // 일정 편집
+       function editEvent(dateKey, eventIndex) {
+           currentDate = dateKey;
+           editingEventIndex = eventIndex;
+           document.getElementById('modal-title').textContent = 'Edit Event';
+           document.getElementById('event-input').value = localEvents[dateKey][eventIndex];
+           document.getElementById('delete-btn').style.display = 'inline-block';
+           document.getElementById('event-modal').style.display = 'block';
+           document.getElementById('event-input').focus();
+       }
+       
+       // 모달 닫기
+       function closeModal() {
+           document.getElementById('event-modal').style.display = 'none';
+           currentDate = null;
+           editingEventIndex = null;
+       }
+       
+       // 일정 저장 - 로컬만 저장 ✅
+       function saveEvent() {
+           const eventText = document.getElementById('event-input').value.trim();
+           
+           if (!eventText) {
+               alert('Please enter an event!');
+               return;
+           }
+           
+           if (!currentDate) {
+               alert('Error: No date selected!');
+               return;
+           }
+           
+           // localEvents 초기화 (필요시)
+           if (!localEvents[currentDate]) {
+               localEvents[currentDate] = [];
+           }
+           
+           if (editingEventIndex !== null) {
+               // 수정
+               if (editingEventIndex < localEvents[currentDate].length) {
+                   localEvents[currentDate][editingEventIndex] = eventText;
+               } else {
+                   localEvents[currentDate].push(eventText);
+               }
+           } else {
+               // 추가
+               localEvents[currentDate].push(eventText);
+           }
+           
+           // 변경사항 표시
+           markAsChanged();
+           displayEvents(currentDate);
+           closeModal();
+           
+           console.log('로컬 저장 완료:', currentDate, localEvents[currentDate]);
+       }
+       
+       // 일정 삭제 - 로컬만 삭제 ✅
+       function deleteEvent() {
+           if (editingEventIndex === null || !currentDate) {
+               console.log('삭제 실패: editingEventIndex 또는 currentDate가 없음');
+               alert('Error: Cannot identify event to delete!');
+               return;
+           }
+           
+           if (!confirm('Are you sure you want to delete this event?')) return;
+           
+           console.log('삭제 시작:', currentDate, editingEventIndex);
+           console.log('삭제 전 localEvents:', localEvents[currentDate]);
+           
+           // localEvents에서 삭제
+           if (localEvents[currentDate] && localEvents[currentDate].length > editingEventIndex) {
+               const deletedEvent = localEvents[currentDate][editingEventIndex];
+               localEvents[currentDate].splice(editingEventIndex, 1);
+               
+               console.log('삭제된 이벤트:', deletedEvent);
+               console.log('삭제 후 localEvents:', localEvents[currentDate]);
+               
+               // 빈 배열이 된 경우에도 키는 유지 (완전 삭제는 서버 저장 시 처리)
+               if (localEvents[currentDate].length === 0) {
+                   localEvents[currentDate] = []; // 빈 배열로 유지
+                   console.log('해당 날짜의 모든 이벤트 삭제됨, 빈 배열로 설정');
+               }
+               
+               // 변경사항 표시
+               markAsChanged();
+               displayEvents(currentDate);
+               closeModal();
+               
+               console.log('로컬 삭제 완료');
+               
+           } else {
+               console.log('삭제 실패: 유효하지 않은 인덱스');
+               alert('Error: Invalid event index!');
+           }
+       }
+       
+       // 캘린더 새로고침 ✅
+       function refreshCalendar() {
+           // 변경사항이 있는 경우 경고
+           if (hasChanges) {
+               if (!confirm('You have unsaved changes. Are you sure you want to refresh? All unsaved changes will be lost.')) {
+                   return;
+               }
+           }
+           
+           // 변경사항 초기화
+           hasChanges = false;
+           localEvents = {};
+           generateCalendar();
+       }
+       
+       // 저장 옵션 모달 표시
+       function showSaveOptions() {
+           const modal = document.getElementById('save-modal-overlay');
+           modal.style.display = 'flex';
+       }
+       
+       // 저장 옵션 모달 닫기
+       function closeSaveModal() {
+           const modal = document.getElementById('save-modal-overlay');
+           modal.style.display = 'none';
+       }
+       
+       // 파일 저장 (PDF 또는 PNG) - A4 비율 최적화
+       async function saveAs(format) {
+           closeSaveModal();
+           
+           const today = new Date();
+           const year = document.getElementById('year-select').value;
+           const month = String(document.getElementById('month-select').value).padStart(2, '0');
+           const filename = `ZENITH_Calendar_${year}_${month}`;
+           
+           const loadingOverlay = document.getElementById('loading-overlay');
+           const loadingText = document.getElementById('loading-text');
+           
+           if (format === 'pdf') {
+               loadingText.textContent = 'Generating PDF...';
+           } else {
+               loadingText.textContent = 'Generating PNG...';
+           }
+           
+           loadingOverlay.style.display = 'flex';
+           
+           try {
+               const element = document.getElementById('calendar-container');
+               
+               // 컨트롤과 상태 메시지 숨기기
+               const controls = document.querySelector('.controls');
+               const saveStatus = document.getElementById('save-status');
+               const connectionStatus = document.querySelector('.connection-status');
+               const addButtons = document.querySelectorAll('.add-event-btn, .clear-day-btn, .day-actions');
+               
+               // 임시 스타일 저장
+               const originalControlsDisplay = controls.style.display;
+               const originalStatusDisplay = saveStatus.style.display;
+               const originalConnectionDisplay = connectionStatus.style.display;
+               
+               // 요소들 숨기기
+               controls.style.display = 'none';
+               saveStatus.style.display = 'none';
+               connectionStatus.style.display = 'none';
+               addButtons.forEach(btn => btn.style.display = 'none');
+               
+               // 선택 방지 스타일 추가
+               const style = document.createElement('style');
+               style.textContent = `
+                   * {
+                       -webkit-user-select: none !important;
+                       -moz-user-select: none !important;
+                       -ms-user-select: none !important;
+                       user-select: none !important;
+                   }
+                   ::selection {
+                       background: transparent !important;
+                   }
+                   ::-moz-selection {
+                       background: transparent !important;
+                   }
+               `;
+               document.head.appendChild(style);
+               
+               // 임시로 border-radius 제거 (렌더링 최적화)
+               const originalBorderRadius = element.style.borderRadius;
+               element.style.borderRadius = '0';
+               
+               // A4 비율에 맞게 강제 크기 설정 (210mm : 297mm = 1 : 1.414)
+               const originalWidth = element.style.width;
+               const originalHeight = element.style.height;
+               const originalMaxWidth = element.style.maxWidth;
+               
+               // A4 비율로 강제 설정 (픽셀 기준)
+               const a4Width = 794; // 210mm at 96 DPI
+               const a4Height = 1123; // 297mm at 96 DPI
+               
+               element.style.width = `${a4Width}px`;
+               element.style.height = `${a4Height}px`;
+               element.style.maxWidth = `${a4Width}px`;
+               
+               // 모바일에서도 A4 비율 유지
+               const viewport = document.querySelector('meta[name="viewport"]');
+               const originalViewport = viewport.content;
+               viewport.content = `width=${a4Width}, initial-scale=1.0, user-scalable=no`;
+               
+               const canvas = await html2canvas(element, {
+                   scale: window.devicePixelRatio > 1 ? 2 : 3, // 고해상도
+                   useCORS: true,
+                   logging: false,
+                   backgroundColor: '#ffffff',
+                   width: a4Width,
+                   height: a4Height,
+                   windowWidth: a4Width,
+                   windowHeight: a4Height,
+                   scrollY: 0,
+                   scrollX: 0,
+                   letterRendering: true,
+                   allowTaint: false,
+                   foreignObjectRendering: false,
+                   removeContainer: false
+               });
+               
+               // 원래 크기와 뷰포트로 복원
+               element.style.width = originalWidth;
+               element.style.height = originalHeight;
+               element.style.maxWidth = originalMaxWidth;
+               element.style.borderRadius = originalBorderRadius;
+               viewport.content = originalViewport;
+               
+               // 요소들 다시 표시
+               controls.style.display = originalControlsDisplay;
+               saveStatus.style.display = originalStatusDisplay;
+               connectionStatus.style.display = originalConnectionDisplay;
+               addButtons.forEach(btn => btn.style.display = '');
+               
+               // 스타일 제거
+               style.remove();
+               
+               if (format === 'pdf') {
+                   // PDF 저장
+                   const { jsPDF } = window.jspdf;
+                   const pdf = new jsPDF({
+                       orientation: 'portrait',
+                       unit: 'mm',
+                       format: 'a4',
+                       compress: true
+                   });
+                   
+                   const imgData = canvas.toDataURL('image/png', 1.0);
+                   
+                   // A4 크기에 정확히 맞추기
+                   const pdfWidth = 210;
+                   const pdfHeight = 297;
+                   
+                   pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
+                   pdf.save(`${filename}.pdf`);
+                   
+                   alert(`PDF saved as ${filename}.pdf!`);
+               } else {
+                   // PNG 저장
+                   const link = document.createElement('a');
+                   link.download = `${filename}.png`;
+                   link.href = canvas.toDataURL('image/png', 1.0);
+                   
+                   // 임시로 DOM에 추가하여 클릭
+                   document.body.appendChild(link);
+                   link.click();
+                   document.body.removeChild(link);
+                   
+                   alert(`PNG saved as ${filename}.png!`);
+               }
+               
+           } catch (error) {
+               console.error(`${format.toUpperCase()} generation error:`, error);
+               alert(`An error occurred while generating ${format.toUpperCase()}.`);
+           } finally {
+               loadingOverlay.style.display = 'none';
+           }
+       }
+       
+       // 모달 외부 클릭 시 닫기
+       document.getElementById('event-modal').onclick = function(event) {
+           if (event.target === this) {
+               closeModal();
+           }
+       }
+       
+       // 저장 모달 외부 클릭 시 닫기
+       document.getElementById('save-modal-overlay').addEventListener('click', function(event) {
+           if (event.target === this) {
+               closeSaveModal();
+           }
+       });
+       
+       // Enter 키로 저장
+       document.getElementById('event-input').addEventListener('keypress', function(event) {
+           if (event.key === 'Enter') {
+               saveEvent();
+           }
+       });
+       
+       // ESC 키로 모달 닫기
+       document.addEventListener('keydown', function(event) {
+           if (event.key === 'Escape') {
+               const eventModal = document.getElementById('event-modal');
+               const saveModal = document.getElementById('save-modal-overlay');
+               
+               if (eventModal.style.display === 'block') {
+                   closeModal();
+               } else if (saveModal.style.display === 'flex') {
+                   closeSaveModal();
+               }
+           }
+       });
+       
+       // 년/월 선택 시 캘린더 재생성
+       document.getElementById('year-select').addEventListener('change', generateCalendar);
+       document.getElementById('month-select').addEventListener('change', generateCalendar);
+       
+       // 페이지 떠나기 전 경고 ✅
+       window.addEventListener('beforeunload', function(event) {
+           if (hasChanges) {
+               event.preventDefault();
+               event.returnValue = 'You have unsaved changes. Are you sure you want to leave?';
+               return event.returnValue;
+           }
+       });
+       
+       // 초기화 실행
+       init();
+   </script>
 </body>
 </html>
